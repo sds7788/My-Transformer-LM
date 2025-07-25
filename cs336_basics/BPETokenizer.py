@@ -1,10 +1,7 @@
 import os
-import regex as re
-import time
 import json
-import psutil
-import requests
-from typing import BinaryIO, Dict, List, Tuple
+import regex as re
+from typing import BinaryIO, Dict, List, Tuple, Iterable, Iterator
 from collections import defaultdict
 from multiprocessing import Pool, cpu_count
 
@@ -64,14 +61,12 @@ def find_chunk_boundaries(file: BinaryIO, desired_num_chunks: int, split_special
     return sorted(set(chunk_boundaries))
 
 # 并行化预分词辅助处理函数
-# 并行处理的辅助函数
-def process_chunk(args: tuple) -> dict[tuple[int, ...], int]:
+def process_chunk(args: tuple) -> list[tuple[int, ...]]:
     """
     处理单个文本块的辅助函数，用于并行化
     """
-    # 直接接收文本块和 special_tokens_map
-    text_chunk, special_tokens_map = args
-    return pre_tokenization(text_chunk, special_tokens_map)
+    text_chunk, special_tokens, special_tokens_map = args
+    return pre_tokenization(text_chunk, special_tokens, special_tokens_map)
 
 
 # 词表初始化函数
@@ -104,42 +99,55 @@ def init_vocab(special_tokens: list[str]) -> tuple[dict[int, bytes], dict[str,in
 
     return vocab, special_tokens_map
 
-
 # 预分词所使用的正则表达式
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 
 # 预分词函数
-def pre_tokenization(text: str, special_tokens_map: dict[str, int]) -> dict[tuple[int, ...], int]:
+def pre_tokenization(text: str, special_tokens: list[str], special_tokens_map: dict[str, int]) -> list[tuple[int, ...]]:
     """
-    对输入的文本进行预分词，统计预分词后个单词块的频率
-
-    Args:
-        text：输入文本
-        special_tokens_map:特殊词元及映射
-
-    Returns:
-        dict[tuple[int, ...], int]:一个字典，键是表示单词块的字节ID元组，值是出现的频率
+    对输入的文本进行预分词，返回每个词块的字节ID元组列表
+    - 特殊词元：返回 (special_token_id,)
+    - 普通文本：返回 (b1, b2, b3, ...)
     """
-    word_freqs = defaultdict(int)
+    if special_tokens is None:
+        special_tokens = []
 
-    # 使用特殊词元来分割文本，确保他们不参与BPE合并
-    special_pattern = "|".join(re.escape(st) for st in special_tokens_map)
+    # 按长度降序排序，避免短词元被误匹配
+    sorted_special_tokens = sorted(special_tokens, key=lambda x: -len(x))
 
+    # 构造正则表达式，匹配特殊词元
+    special_pattern = "|".join(re.escape(st) for st in sorted_special_tokens)
     if not special_pattern:
         text_parts = [text]
     else:
-        text_parts = re.split(f"({special_pattern})", text)
+        text_parts = re.split('(' + special_pattern + ')', text)
+
+    results = []
 
     for part in text_parts:
-        if part in special_tokens_map:
+        if not part:  # 跳过空字符串
             continue
-        
-        for match in re.finditer(PAT, part):
-            word_chunk = match.group(0)
-            byte_tuple = tuple(b for b in word_chunk.encode('utf-8'))
-            word_freqs[byte_tuple] += 1
-            
-    return word_freqs
+
+        if part in special_tokens:
+            # 特殊词元：直接映射为 ID
+            token_id = special_tokens_map[part]
+            results.append((token_id,))
+        else:
+            # 普通文本：用正则 PAT 预分词，再转为字节ID
+            for match in re.finditer(PAT, part):
+                word_chunk = match.group(0)
+                byte_tuple = tuple(b for b in word_chunk.encode('utf-8'))
+                results.append(byte_tuple)
+
+    return results
+
+# 统计频率的辅助函数
+def count_chunks(chunks: list[tuple[int, ...]]) -> dict[tuple[int, ...], int]:
+    from collections import defaultdict
+    freq = defaultdict(int)
+    for chunk in chunks:
+        freq[chunk] += 1
+    return freq
 
 # 合并函数
 # 首先我们计算所有相邻字节对的频率
@@ -155,31 +163,6 @@ def get_pair_stats(word_freqs: dict[tuple[int, ...], int]) -> dict[tuple[int, in
             # 将这个字节对的计数增加单词块出现的次数
             pair_stats[pair] += freq
     return pair_stats
-
-### 太过于低效,选择效率更高的数据结构,采用增量更新
-# def merge_pair(word_freqs: dict[tuple[int, ...], int], pair_to_merge: tuple[int, int], new_token_id: int) -> dict[tuple[int, ...], int]:
-#     """ 在所有单词块中合并指定的字节对 """
-#     new_word_freqs = defaultdict(int)
-#     p1, p2 = pair_to_merge
-    
-#     # 遍历每一个单词块
-#     for word_tuple, freq in word_freqs.items():
-#         new_word_tuple = []
-#         i = 0
-#         while i < len(word_tuple):
-#             # 检查当前位置和下一位置是否构成了我们要合并的对
-#             if i < len(word_tuple) - 1 and word_tuple[i] == p1 and word_tuple[i+1] == p2:
-#                 # 如果是，就用新的ID替换这个对
-#                 new_word_tuple.append(new_token_id)
-#                 i += 2  # 指针向前移动两位
-#             else:
-#                 # 如果不是，就保留原来的字节ID
-#                 new_word_tuple.append(word_tuple[i])
-#                 i += 1  # 指针向前移动一位
-#         # 将新生成的单词块（元组形式）及其原始频率存入新字典
-#         new_word_freqs[tuple(new_word_tuple)] += freq
-        
-#     return new_word_freqs
 
 # 合并和增量更新函数
 def merge_and_update_stats(
@@ -214,7 +197,7 @@ def merge_and_update_stats(
         merged = False
         while i < len(word_tuple):
             if i < len(word_tuple) - 1 and word_tuple[i] == p1 and word_tuple[i+1] == p2:
-                # --- 核心增量更新逻辑 ---
+                # 核心增量更新
                 # 1. 更新被破坏的旧邻居关系
                 if i > 0:
                     prev_token = word_tuple[i-1]
@@ -258,7 +241,6 @@ def bpe_train(input_path: str, vocab_size: int, special_tokens: list[str]) -> tu
         vocab:最终词汇表
         merges:训练时产生的BPE合并列表
     """
-
     # 1. 初始化词汇表
     print("1. 初始化词汇表...")
     vocab, special_tokens_map = init_vocab(special_tokens)
@@ -277,70 +259,20 @@ def bpe_train(input_path: str, vocab_size: int, special_tokens: list[str]) -> tu
             f.seek(start)
             text_chunk = f.read(end - start).decode("utf-8", "ignore").replace('\r\n', '\n') # 不同操作系统的换行符问题
             # 准备好解码后的文本块作为参数
-            chunk_args.append((text_chunk, special_tokens_map))
+            chunk_args.append((text_chunk, special_tokens, special_tokens_map))
     
     with Pool(num_processes) as pool:
         # pool.map现在处理的是包含文本块的参数
-        list_of_word_freqs = pool.map(process_chunk, chunk_args)
+        list_of_chunks = pool.map(process_chunk, chunk_args)
     
     # 3. 聚合所有进程的预分词结果
     print("3. 聚合所有进程的预分词结果...")
-    word_freqs = defaultdict(int)
-    for single_word_freqs in list_of_word_freqs:
-        for word, freq in single_word_freqs.items():
-            word_freqs[word] += freq
-            
-    # # 4. BPE主循环
-    # print("4. 开始BPE合并训练...")
-    # merges = []
-    # num_merges = vocab_size - len(vocab) # 需要执行的合并次数
+    all_chunks = []
+    for chunks in list_of_chunks:
+        all_chunks.extend(chunks)
+    word_freqs = count_chunks(all_chunks)
 
-    # for i in range(num_merges):
-    #     # 4.1. 计算字节对频率
-    #     pair_stats = get_pair_stats(word_freqs)
-
-    #     # 如果没有更多可合并的对，提前结束
-    #     if not pair_stats:
-    #         print("没有更多可合并的字节对，训练提前结束。")
-    #         break
-
-    #     # 4.2. 找到频率最高的字节对
-    #     best_pair = max(
-    #         pair_stats.keys(),
-    #         key=lambda p: (
-    #             pair_stats[p],
-    #             vocab.get(p[0], b'').decode('utf-8', 'replace'),
-    #             vocab.get(p[1], b'').decode('utf-8', 'replace')
-    #         )
-    #     )
-
-    #     # 4.3. 创建新的词元ID
-    #     new_token_id = len(vocab)
-
-    #     # 4.4. 在词块中合并该字节对
-    #     word_freqs = merge_pair(word_freqs, best_pair, new_token_id)
-        
-    #     # 4.5. 记录合并信息 (以字节形式)
-    #     p1, p2 = best_pair
-    #     b1 = vocab[p1]
-    #     b2 = vocab[p2]
-    #     merges.append((b1, b2))
-        
-    #     # 4.6. 更新词汇表
-    #     vocab[new_token_id] = b1 + b2
-
-    #     # 打印进度
-    #     if (i + 1) % 50 == 0 or i == num_merges - 1:
-    #         # 使用repr来显示字节串，避免乱码
-    #         print(f"合并 {i+1}/{num_merges}: {best_pair} -> {new_token_id} (新词元: {repr(vocab[new_token_id])})")
-
-    # print("\nBPE训练完成！")
-    # print(f"最终词汇表大小: {len(vocab)}")
-
-    # # 5. 返回结果
-    # return vocab, merges
-
-    # 4. BPE主循环
+    # 4. 主循环
     print("4. 开始BPE合并训练...")
     merges = []
     num_merges = vocab_size - len(vocab)
@@ -355,7 +287,7 @@ def bpe_train(input_path: str, vocab_size: int, special_tokens: list[str]) -> tu
             print("没有更多可合并的字节对，训练提前结束。")
             break
 
-        # 4.2. 直接从stats中找到频率最高的字节对
+        # 4.2. 直接从stats中找到频率最高的字节对,其中应用了平局字典序最高
         best_pair = max(
             pair_stats.keys(),
             key=lambda p: (
@@ -390,94 +322,112 @@ def bpe_train(input_path: str, vocab_size: int, special_tokens: list[str]) -> tu
     
     return vocab, merges
 
-####### 为训练让Gemini写的一个主程序
-def save_results(vocab: dict, merges: list):
-    """将词汇表和合并规则保存到磁盘"""
-    # 保存词汇表
-    # 将字节值转换为Base64编码的字符串以便JSON序列化
-    import base64
-    vocab_serializable = {
-        token_id: base64.b64encode(byte_val).decode('utf-8') 
-        for token_id, byte_val in vocab.items()
-    }
-    vocab_path = "tinystories_vocab.json"
-    with open(vocab_path, "w") as f:
-        json.dump(vocab_serializable, f, indent=2)
-    print(f"词汇表已保存至: {vocab_path}")
+# 太恶心了,规则不一样居然不说清楚啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊
+# 我讨厌你我讨厌你我讨厌你
+def pre_tokenize(text, vocab, special_tokens, special_tokens_map):
+    vocab_reversed = {v: k for k, v in vocab.items()}  # bytes: int
+    if special_tokens is None:
+        special_tokens = []
 
-    # 保存合并规则
-    merges_path = "tinystories_merges.txt"
-    with open(merges_path, "w", encoding="utf-8") as f:
-        for p1, p2 in merges:
-            # repr()可以很好地处理字节串的表示
-            f.write(f"{repr(p1)} {repr(p2)}\n")
-    print(f"合并规则已保存至: {merges_path}")
+    # 按长度降序排序，避免短词元被误匹配
+    sorted_special_tokens = sorted(special_tokens, key=lambda x: -len(x))
 
-if __name__ == "__main__":
-    # --- (a) 在TinyStories上训练BPE ---
+    # 构造正则表达式，匹配特殊词元
+    special_pattern = "|".join(re.escape(st) for st in sorted_special_tokens)
+    if not special_pattern:
+        text_parts = [text]
+    else:
+        text_parts = re.split('(' + special_pattern + ')', text)
+
+    results = []
+
+    for part in text_parts:
+        if not part:  # 跳过空字符串
+            continue
+
+        if part in special_tokens:
+            # 特殊词元：直接映射为 ID
+            token_id = special_tokens_map[part]
+            results.append((token_id,))
+        else:
+            # 普通文本：用正则 PAT 预分词，再转为字节ID
+            for match in re.finditer(PAT, part):
+                word_chunk = match.group(0)
+                byte_tuple = tuple(vocab_reversed[bytes([b])] for b in word_chunk.encode('utf-8'))
+                results.append(byte_tuple)
+
+    return results
+
+####### BPE Tokenizer
+class BPETokenizer:
+    def __init__(self, vocab: dict[int, bytes], merges: list[tuple[bytes, bytes]], special_tokens: list[str]):
+        self.vocab = vocab
+        self.merges = merges
+        if special_tokens is None:
+            special_tokens = []
+        self.special_tokens = special_tokens 
+        
+        self.byte_to_id = {v: k for k, v in vocab.items()}
+        self.special_tokens_map = {st: self.byte_to_id.get(st.encode('utf-8')) for st in self.special_tokens}
+        
+        
+    @classmethod
+    def from_files(cls, vocab_filepath: str, merges_filepath: str, special_tokens: list[str] | None = None):
+        """Class method that constructs and return a Tokenizer from a serialized vocabulary and list of merges"""
+        raise NotImplementedError
+
+    def encode(self, text: str) -> list[int]:
+        """将输入文本编码为词元ID序列"""
+
+        # 1. 预分词，返回每个词块的字节ID元组列表
+        pre_tokenized_chunks = pre_tokenize(text, self.vocab, self.special_tokens, self.special_tokens_map)
+        pretokens = [list(chunk) for chunk in pre_tokenized_chunks]
+
+        # 2. 对每个词块分别处理
+        for i, pretoken in enumerate(pretokens):
+            for merge in self.merges:
+                new_pretoken = []
+                new_index = self.byte_to_id[merge[0] + merge[1]]
+                j = 0
+                while j < len(pretoken):
+                    if (j < len(pretoken)-1) and ((self.vocab[pretoken[j]], self.vocab[pretoken[j+1]]) == merge):
+                        new_pretoken.append(new_index)
+                        j += 2
+                    else:
+                        new_pretoken.append(pretoken[j])
+                        j += 1
+
+                pretoken = new_pretoken
+
+            pretokens[i] = pretoken
+
+        tokens = [token for pretoken in pretokens for token in pretoken] 
+        return tokens
     
-    # 记录初始内存
-    process = psutil.Process(os.getpid())
-    mem_before = process.memory_info().rss / (1024 ** 2) # MB
-
-    # 定义训练参数
-    INPUT_FILE_PATH = "../data/TinyStoriesV2-GPT4-train.txt" 
-    VOCAB_SIZE = 10000
-    SPECIAL_TOKENS = ["<|endoftext|>"]
+    def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
+        """Given an iterable of strings (e.g., a Python file handle), 
+        return a generator that lazily yields token IDs. 
+        This is required for memory-eﬀicient tokenization of large files 
+        that we cannot directly load into memory.
+        """
+        for line in iterable:
+            for idx in self.encode(line):
+                yield idx
     
-    # 开始计时
-    start_time = time.time()
+    def decode(self, ids: list[int]) -> str:
+        """Decode a sequence of token IDs into text."""
+        tokens = bytes()
+        vocab_size = len(self.vocab)
+        replacement_char = "\uFFFD"
 
-    # 执行训练
-    vocab, merges, timings = bpe_train(
-        input_path=INPUT_FILE_PATH,
-        vocab_size=VOCAB_SIZE,
-        special_tokens=SPECIAL_TOKENS
-    )
+        for token_id in ids:
+            if token_id < vocab_size:
+                token = self.vocab[token_id]    # bytes
+            else:
+                token = bytes(replacement_char, encoding='utf-8')   # Replace tokens with Unicode replacement characters if index out of bounds
+
+            tokens += token
+        decoded = tokens.decode(encoding='utf-8', errors='replace')
+
+        return decoded 
     
-    # 结束计时
-    end_time = time.time()
-    total_time_seconds = end_time - start_time
-    total_time_minutes = total_time_seconds / 60
-
-    # 记录峰值内存
-    mem_after = process.memory_info().rss / (1024 ** 2) # MB
-    peak_memory_mb = max(mem_before, mem_after) # 简易峰值估算
-
-    # 保存结果
-    save_results(vocab, merges)
-    
-    print("\n--- 训练结果分析 ---")
-    
-    # (a) 问题回答
-    print("(a) 训练耗时与资源使用情况:")
-    print(f"训练总耗时: {total_time_minutes:.2f} 分钟 ({total_time_seconds:.2f} 秒)")
-    print(f"峰值内存使用估算: {peak_memory_mb:.2f} MB")
-    
-    # 找出最长的词元
-    longest_token_len = 0
-    longest_token_val = b''
-    for token_bytes in vocab.values():
-        if len(token_bytes) > longest_token_len:
-            longest_token_len = len(token_bytes)
-            longest_token_val = token_bytes
-
-    print(f"\n词汇表中最长的词元是: {repr(longest_token_val)}")
-    print(f"它的长度是: {longest_token_len} 字节")
-    # 尝试解码并分析意义
-    try:
-        decoded_token = longest_token_val.decode('utf-8')
-        print(f"解码后的内容是: '{decoded_token}'")
-        print("它是否有意义？ 对于TinyStories这种儿童故事集，出现像 ' once upon a time' 或 ' and they lived happily' 这样反复出现的长短语是完全合理的。")
-    except UnicodeDecodeError:
-        print("它无法被完整解码为UTF-8字符串，说明它可能是一个跨越多个字符边界的字节序列，但这在BPE中是正常的。")
-
-    print("\n" + "="*40 + "\n")
-
-    # --- (b) 性能分析 ---
-    print("(b) 训练过程各部分耗时分析:")
-    for stage, duration in timings.items():
-        print(f" - {stage:<30}: {duration:.4f} 秒")
-
-    slowest_stage = max(timings, key=timings.get)
-    print(f"\n耗时最长的部分是: '{slowest_stage}'，耗时 {timings[slowest_stage]:.2f} 秒。")
