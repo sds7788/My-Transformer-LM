@@ -10,6 +10,11 @@ import torch
 from torch import Tensor
 
 from cs336_basics.BPETokenizer import bpe_train, BPETokenizer
+from cs336_basics.Linear import Linear # 从我们刚才创建的文件中导入 Linear 类
+from cs336_basics.Embedding import Embedding
+from cs336_basics.RMSNorm import RMSNorm
+from cs336_basics.PositionWiseFNN import positionwise_feedforward
+
 
 
 def run_linear(
@@ -30,8 +35,11 @@ def run_linear(
     Returns:
         Float[Tensor, "... d_out"]: The transformed output of your linear module.
     """
+    model = Linear(d_in, d_out)
+    model.weight.data.copy_(weights) # 将weights的值赋值给model中的weight变量
+    output = model(in_features)
 
-    raise NotImplementedError
+    return output
 
 
 def run_embedding(
@@ -52,9 +60,11 @@ def run_embedding(
     Returns:
         Float[Tensor, "... d_model"]: Batch of embeddings returned by your Embedding layer.
     """
-
-    raise NotImplementedError
-
+    model = Embedding(vocab_size, d_model)
+    model.weight.data.copy_(weights) # 把权重传进去
+    output = model(token_ids)
+    
+    return output
 
 def run_swiglu(
     d_model: int,
@@ -85,7 +95,12 @@ def run_swiglu(
     # swiglu.w1.weight.data = w1_weight
     # swiglu.w2.weight.data = w2_weight
     # swiglu.w3.weight.data = w3_weight
-    raise NotImplementedError
+    swiglu = positionwise_feedforward(d_model, d_ff)
+    swiglu.w1.weight.data.copy_(w1_weight)
+    swiglu.w2.weight.data.copy_(w2_weight)
+    swiglu.w3.weight.data.copy_(w3_weight)
+    output = swiglu(in_features)
+    return output
 
 
 def run_scaled_dot_product_attention(
@@ -380,7 +395,11 @@ def run_rmsnorm(
         Float[Tensor,"... d_model"]: Tensor of with the same shape as `in_features` with the output of running
         RMSNorm of the `in_features`.
     """
-    raise NotImplementedError
+    model = RMSNorm(d_model, eps)
+    model.weight.data.copy_(weights)
+    result = model(in_features)
+    
+    return result
 
 
 def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
