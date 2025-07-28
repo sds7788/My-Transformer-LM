@@ -14,8 +14,10 @@ from cs336_basics.Linear import Linear # 从我们刚才创建的文件中导入
 from cs336_basics.Embedding import Embedding
 from cs336_basics.RMSNorm import RMSNorm
 from cs336_basics.PositionWiseFNN import positionwise_feedforward
-
-
+from cs336_basics.RoPE import RoPE
+from cs336_basics.Attention import Softmax,scaled_dot_product_attention,CausalMultiHeadSelfAttention
+from cs336_basics.Transformer import Transformer,TransformerLM
+from cs336_basics.Loss import cross_entropy_loss
 
 def run_linear(
     d_in: int,
@@ -121,7 +123,8 @@ def run_scaled_dot_product_attention(
     Returns:
         Float[Tensor, " ... queries d_v"]: Output of SDPA
     """
-    raise NotImplementedError
+    output = scaled_dot_product_attention(Q, K, V, mask)
+    return output
 
 
 def run_multihead_self_attention(
@@ -155,7 +158,13 @@ def run_multihead_self_attention(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    model = CausalMultiHeadSelfAttention(d_model, num_heads)
+    model.q_proj.weight.data.copy_(q_proj_weight)
+    model.k_proj.weight.data.copy_(k_proj_weight)
+    model.v_proj.weight.data.copy_(v_proj_weight)
+    model.o_proj.weight.data.copy_(o_proj_weight)
+    output = model(in_features)
+    return output
 
 
 def run_multihead_self_attention_with_rope(
@@ -195,7 +204,14 @@ def run_multihead_self_attention_with_rope(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    model = CausalMultiHeadSelfAttention(d_model, num_heads, use_rope=True, max_seq_len=max_seq_len, 
+                                   theta=theta, token_positions=token_positions)
+    model.q_proj.weight.data.copy_(q_proj_weight)
+    model.k_proj.weight.data.copy_(k_proj_weight)
+    model.v_proj.weight.data.copy_(v_proj_weight)
+    model.o_proj.weight.data.copy_(o_proj_weight)
+    output = model(in_features)
+    return output
 
 
 def run_rope(
@@ -217,7 +233,9 @@ def run_rope(
     Returns:
         Float[Tensor, " ... sequence_length d_k"]: Tensor with RoPEd input.
     """
-    raise NotImplementedError
+    rope = RoPE(theta, d_k, max_seq_len)
+    output = rope(in_query_or_key, token_positions)
+    return output
 
 
 def run_transformer_block(
@@ -290,7 +308,25 @@ def run_transformer_block(
         Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
         running the Transformer block on the input features while using RoPE.
     """
-    raise NotImplementedError
+    model = Transformer(
+        d_model=d_model,
+        num_heads=num_heads,
+        d_ff=d_ff,
+        max_seq_len=max_seq_len,
+        theta=theta
+    )
+    model.attn.q_proj.weight.data.copy_(weights["attn.q_proj.weight"])
+    model.attn.k_proj.weight.data.copy_(weights["attn.k_proj.weight"])
+    model.attn.v_proj.weight.data.copy_(weights["attn.v_proj.weight"])
+    model.attn.o_proj.weight.data.copy_(weights["attn.output_proj.weight"])
+    model.rms_norm1.weight.data.copy_(weights["ln1.weight"])
+    model.ff.w1.weight.data.copy_(weights["ffn.w1.weight"])
+    model.ff.w2.weight.data.copy_(weights["ffn.w2.weight"])
+    model.ff.w3.weight.data.copy_(weights["ffn.w3.weight"])
+    model.rms_norm2.weight.data.copy_(weights["ln2.weight"])
+
+    output = model(in_features)
+    return output
 
 
 def run_transformer_lm(
@@ -372,7 +408,34 @@ def run_transformer_lm(
         Float[Tensor, "batch_size sequence_length vocab_size"]: Tensor with the predicted unnormalized
         next-word distribution for each token.
     """
-    raise NotImplementedError
+    model = TransformerLM(
+        vocab_size=vocab_size,
+        context_length=context_length,
+        d_model=d_model,   
+        num_layers=num_layers,
+        num_heads=num_heads,
+        d_ff=d_ff,
+        rope_theta=rope_theta
+    )
+    
+    model.token_embeddings.weight.data.copy_(weights["token_embeddings.weight"])
+    
+    for layer_idx in range(num_layers):
+        model.layers[layer_idx].attn.q_proj.weight.data.copy_(weights[f"layers.{layer_idx}.attn.q_proj.weight"])
+        model.layers[layer_idx].attn.k_proj.weight.data.copy_(weights[f"layers.{layer_idx}.attn.k_proj.weight"])
+        model.layers[layer_idx].attn.v_proj.weight.data.copy_(weights[f"layers.{layer_idx}.attn.v_proj.weight"])
+        model.layers[layer_idx].attn.o_proj.weight.data.copy_(weights[f"layers.{layer_idx}.attn.output_proj.weight"])
+        model.layers[layer_idx].rms_norm1.weight.data.copy_(weights[f"layers.{layer_idx}.ln1.weight"])
+        model.layers[layer_idx].ff.w1.weight.data.copy_(weights[f"layers.{layer_idx}.ffn.w1.weight"])
+        model.layers[layer_idx].ff.w2.weight.data.copy_(weights[f"layers.{layer_idx}.ffn.w2.weight"])
+        model.layers[layer_idx].ff.w3.weight.data.copy_(weights[f"layers.{layer_idx}.ffn.w3.weight"])
+        model.layers[layer_idx].rms_norm2.weight.data.copy_(weights[f"layers.{layer_idx}.ln2.weight"])
+
+    model.rms_norm.weight.data.copy_(weights["ln_final.weight"])
+    model.output_embeddings.weight.data.copy_(weights["lm_head.weight"])
+
+    output = model(in_indices)
+    return output
 
 
 def run_rmsnorm(
@@ -452,7 +515,7 @@ def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, "
         Float[Tensor, "..."]: Tensor of with the same shape as `in_features` with the output of
         softmax normalizing the specified `dim`.
     """
-    raise NotImplementedError
+    return Softmax(in_features, dim)
 
 
 def run_cross_entropy(inputs: Float[Tensor, " batch_size vocab_size"], targets: Int[Tensor, " batch_size"]) -> Float[Tensor, ""]:
@@ -468,7 +531,8 @@ def run_cross_entropy(inputs: Float[Tensor, " batch_size vocab_size"], targets: 
     Returns:
         Float[Tensor, ""]: The average cross-entropy loss across examples.
     """
-    raise NotImplementedError
+    loss = cross_entropy_loss(inputs=inputs, targets=targets)
+    return loss
 
 
 def run_gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm: float) -> None:
