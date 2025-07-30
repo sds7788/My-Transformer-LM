@@ -41,17 +41,29 @@ def main():
     vocab_path = DATA_DIR / bpe_cfg['vocab_file']
     merges_path = DATA_DIR / bpe_cfg['merges_file']
 
-    vocab, merges = bpe_train(
-        input_path=str(raw_train_path), # 确保传入的是字符串路径
-        vocab_size=bpe_cfg['vocab_size'],
-        special_tokens=bpe_cfg['special_tokens'],
-    )
-    
-    save_pkl(vocab, vocab_path)
-    save_pkl(merges, merges_path)
+    if vocab_path.exists() and merges_path.exists():
+        # 如果文件已存在，则跳过训练
+        print("--- 步骤 1: BPE 训练已跳过 ---")
+        print(f"原因: 词汇表和合并规则文件已存在。")
+        print(f"  - 词汇表: {vocab_path}")
+        print(f"  - 合并规则: {merges_path}\n")
+    else:
+        # 如果文件不存在，则执行训练
+        print("--- 步骤 1: 开始 BPE 训练 ---")
+        start_time = time.time()
+        
+        vocab, merges = bpe_train(
+            input_path=str(raw_train_path), 
+            vocab_size=bpe_cfg['vocab_size'],
+            special_tokens=bpe_cfg['special_tokens'],
+        )
+        
+        print(f"训练完成，正在保存文件...")
+        save_pkl(vocab, vocab_path)
+        save_pkl(merges, merges_path)
 
-    duration = time.time() - start_time
-    print(f"BPE 训练完成，耗时: {duration // 60:.0f} 分 {duration % 60:.0f} 秒。\n")
+        duration = time.time() - start_time
+        print(f"BPE 训练及保存完成，耗时: {duration // 60:.0f} 分 {duration % 60:.0f} 秒。\n")
 
 
     print("--- 步骤 2: 开始数据 Tokenization ---")
