@@ -63,16 +63,12 @@ def find_chunk_boundaries(file: BinaryIO, desired_num_chunks: int, split_special
     return sorted(set(chunk_boundaries))
 
 # 并行化预分词辅助处理函数
-# def process_chunk(args: tuple) -> list[tuple[int, ...]]:
-#     """
-#     处理单个文本块的辅助函数，用于并行化
-#     """
-#     text_chunk, special_tokens, special_tokens_map = args
-#     return pre_tokenization(text_chunk, special_tokens, special_tokens_map)
-def process_chunk(args: tuple) -> dict[tuple[int,...], int]:
+def process_chunk(args: tuple) -> list[tuple[int, ...]]:
+    """
+    处理单个文本块的辅助函数，用于并行化
+    """
     text_chunk, special_tokens, special_tokens_map = args
-    word_chunks_list = pre_tokenization(text_chunk, special_tokens, special_tokens_map)
-    return word_chunks_list
+    return Counter(pre_tokenization(text_chunk, special_tokens, special_tokens_map))   
 
 # 词表初始化函数
 def init_vocab(special_tokens: list[str]) -> tuple[dict[int, bytes], dict[str,int]]:
@@ -266,16 +262,26 @@ def bpe_train(input_path: str, vocab_size: int, special_tokens: list[str]) -> tu
             # 准备好解码后的文本块作为参数
             chunk_args.append((text_chunk, special_tokens, special_tokens_map))
     
-    with Pool(num_processes) as pool:
-        # pool.map现在处理的是包含文本块的参数
-        list_of_chunks = pool.map(process_chunk, chunk_args)
+    # with Pool(num_processes) as pool:
+    #     # pool.map现在处理的是包含文本块的参数
+    #     list_of_chunks = pool.map(process_chunk, chunk_args)
     
-    # 3. 聚合所有进程的预分词结果
-    print("3. 聚合所有进程的预分词结果...")
-    all_chunks = []
-    for chunks in list_of_chunks:
-        all_chunks.extend(chunks)
-    word_freqs = count_chunks(all_chunks)
+    # # 3. 聚合所有进程的预分词结果
+    # print("3. 聚合所有进程的预分词结果...")
+    # all_chunks = []
+    # for chunks in list_of_chunks:
+    #     all_chunks.extend(chunks)
+    # word_freqs = count_chunks(all_chunks)
+   
+    with Pool(num_processes) as pool:
+        # list_of_counters 是一个计数字典的列表，而不是巨大词块列表的列表
+        list_of_counters = pool.map(process_chunk, chunk_args)
+    
+    # 3. 高效合并计数字典
+    print("3. 聚合所有进程的频率统计结果...")
+    word_freqs = Counter()
+    for counter in list_of_counters:
+        word_freqs.update(counter)
 
     # 4. 主循环
     print("4. 开始BPE合并训练...")
