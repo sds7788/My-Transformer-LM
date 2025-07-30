@@ -188,7 +188,7 @@ def generate_sample_and_log(model, tokenizer, prompt_str, device, iteration, max
     model.train()
 
 if __name__ == '__main__':
-    trainfile_name = 'TinyStoriesV2-GPT4-valid.txt'
+    trainfile_name = 'TinyStoriesV2-GPT4-train.txt'
     validfile_name = 'TinyStoriesV2-GPT4-valid.txt'
     vocab_name = 'TinyStories_vocab.pkl'
     merges_name = 'TinyStories_merges.pkl'
