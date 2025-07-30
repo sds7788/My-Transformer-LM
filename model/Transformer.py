@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 from .RMSNorm import RMSNorm
 from .Attention import CausalMultiHeadSelfAttention, Softmax
-from .PositionWiseFNN import positionwise_feedforward
+from .PositionWiseFFN import positionwise_feedforward
 from .Embedding import Embedding
 from .Linear import Linear
 

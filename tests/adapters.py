@@ -9,20 +9,20 @@ import numpy.typing as npt
 import torch
 from torch import Tensor
 
-from cs336_basics.BPETokenizer import bpe_train, BPETokenizer
-from cs336_basics.Linear import Linear # 从我们刚才创建的文件中导入 Linear 类
-from cs336_basics.Embedding import Embedding
-from cs336_basics.RMSNorm import RMSNorm
-from cs336_basics.PositionWiseFNN import positionwise_feedforward
-from cs336_basics.RoPE import RoPE
-from cs336_basics.Attention import Softmax,scaled_dot_product_attention,CausalMultiHeadSelfAttention
-from cs336_basics.Transformer import Transformer,TransformerLM
-from cs336_basics.Loss import cross_entropy_loss
-from cs336_basics.AdamW import AdamW
-from cs336_basics.GradientClipping import gradient_clipping
-from cs336_basics.lrSchedule import get_lr_cosine_schedule
-from cs336_basics.CheckPoints import save_checkpoint, load_checkpoint
-from cs336_basics.DataLoading import get_batch
+from model.BPETokenizer import bpe_train, BPETokenizer
+from model.Linear import Linear # 从我们刚才创建的文件中导入 Linear 类
+from model.Embedding import Embedding
+from model.RMSNorm import RMSNorm
+from model.PositionWiseFFN import positionwise_feedforward
+from model.RoPE import RoPE
+from model.Attention import Softmax,scaled_dot_product_attention,CausalMultiHeadSelfAttention
+from model.Transformer import Transformer,TransformerLM
+from model.Loss import cross_entropy_loss
+from model.AdamW import AdamW
+from model.GradientClipping import gradient_clipping
+from model.lrSchedule import get_lr_cosine_schedule
+from model.CheckPoints import save_checkpoint, load_checkpoint
+from model.DataLoading import get_batch
 
 def run_linear(
     d_in: int,
