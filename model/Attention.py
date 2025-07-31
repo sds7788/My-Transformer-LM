@@ -86,6 +86,14 @@ class CausalMultiHeadSelfAttention(nn.Module):
         self.k_proj = Linear(d_model, d_model) # K 投影
         self.v_proj = Linear(d_model, d_model) # V 投影
         self.o_proj = Linear(d_model, d_model) # 输出线性层
+        
+        if max_seq_len is not None:
+            # 创建一个最大尺寸的因果掩码
+            mask = torch.triu(torch.ones(max_seq_len, max_seq_len), diagonal=1).bool()
+            # 将其注册为 buffer，并塑造成 (1, 1, max_seq_len, max_seq_len) 以便广播
+            self.register_buffer('casual_mask', mask[None, None, :, :])
+        else:
+            self.register_buffer('casual_mask', None)
 
     def forward(self, in_features:torch.Tensor):
         """            
@@ -112,9 +120,9 @@ class CausalMultiHeadSelfAttention(nn.Module):
             k = self.rope(k, self.token_positions)
 
         # 创建并应用因果掩码,进行缩放点积注意力
-        casual_mask = torch.triu(torch.ones(seq_len, seq_len), diagonal=1).bool()
-        casual_mask = casual_mask[None, None, :, :]
-        output = scaled_dot_product_attention(q, k, v, ~casual_mask) # ~ 是将掩码反转
+        mask = self.casual_mask[:, :, :seq_len, :seq_len]
+        
+        output = scaled_dot_product_attention(q, k, v, ~mask) # ~ 是将掩码反转
 
         # 再次使用rearrange合并多头
         output = rearrange(

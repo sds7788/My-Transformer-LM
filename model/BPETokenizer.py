@@ -370,91 +370,236 @@ def pre_tokenize(text, vocab, special_tokens, special_tokens_map):
     return results
 
 ####### BPE Tokenizer
+# class BPETokenizer:
+#     def __init__(self, vocab: dict[int, bytes], merges: list[tuple[bytes, bytes]], special_tokens: list[str]):
+#         self.vocab = vocab
+#         self.merges = merges
+#         if special_tokens is None:
+#             special_tokens = []
+#         self.special_tokens = special_tokens 
+        
+#         self.byte_to_id = {v: k for k, v in vocab.items()}
+#         self.special_tokens_map = {st: self.byte_to_id.get(st.encode('utf-8')) for st in self.special_tokens}
+        
+        
+#     @classmethod
+#     def from_files(cls, vocab_filepath: str, merges_filepath: str, special_tokens: list[str] | None = None):
+#         """Class method that constructs and return a Tokenizer from a serialized vocabulary and list of merges"""
+#         # 加载 vocab.pkl
+#         with open(vocab_filepath, 'rb') as vf:
+#             raw_vocab = pickle.load(vf)
+#         # 转换为 {int: bytes}
+#         vocab = {int(k): (v.encode("utf-8") if isinstance(v, str) else v)
+#                 for k, v in raw_vocab.items()}
+#         # 加载 merges.pkl
+#         with open(merges_filepath, 'rb') as mf:
+#             raw_merges = pickle.load(mf)
+#         # 转换为 List[Tuple[bytes, bytes]]
+#         merges = []
+#         for a, b in raw_merges:
+#             merges.append((
+#                 a.encode("utf-8") if isinstance(a, str) else a,
+#                 b.encode("utf-8") if isinstance(b, str) else b
+#             ))
+#         return cls(vocab, merges, special_tokens)
+
+#     def encode(self, text: str) -> list[int]:
+#         """将输入文本编码为词元ID序列"""
+
+#         # 1. 预分词，返回每个词块的字节ID元组列表
+#         pre_tokenized_chunks = pre_tokenize(text, self.vocab, self.special_tokens, self.special_tokens_map)
+#         pretokens = [list(chunk) for chunk in pre_tokenized_chunks]
+
+#         # 2. 对每个词块分别处理
+#         for i, pretoken in enumerate(pretokens):
+#             for merge in self.merges:
+#                 new_pretoken = []
+#                 new_index = self.byte_to_id[merge[0] + merge[1]]
+#                 j = 0
+#                 while j < len(pretoken):
+#                     if (j < len(pretoken)-1) and ((self.vocab[pretoken[j]], self.vocab[pretoken[j+1]]) == merge):
+#                         new_pretoken.append(new_index)
+#                         j += 2
+#                     else:
+#                         new_pretoken.append(pretoken[j])
+#                         j += 1
+
+#                 pretoken = new_pretoken
+
+#             pretokens[i] = pretoken
+
+#         tokens = [token for pretoken in pretokens for token in pretoken] 
+#         return tokens
+    
+#     def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
+#         """Given an iterable of strings (e.g., a Python file handle), 
+#         return a generator that lazily yields token IDs. 
+#         This is required for memory-eﬀicient tokenization of large files 
+#         that we cannot directly load into memory.
+#         """
+#         for line in iterable:
+#             for idx in self.encode(line):
+#                 yield idx
+    
+#     def decode(self, ids: list[int]) -> str:
+#         """Decode a sequence of token IDs into text."""
+#         tokens = bytes()
+#         vocab_size = len(self.vocab)
+#         replacement_char = "\uFFFD"
+
+#         for token_id in ids:
+#             if token_id < vocab_size:
+#                 token = self.vocab[token_id]    # bytes
+#             else:
+#                 token = bytes(replacement_char, encoding='utf-8')   # Replace tokens with Unicode replacement characters if index out of bounds
+
+#             tokens += token
+#         decoded = tokens.decode(encoding='utf-8', errors='replace')
+
+#         return decoded 
+    
+def to_bytes_tuple(word: str) -> Tuple[bytes]:
+    l = list(word.encode("utf-8"))
+    l = [bytes([x]) for x in l]
+    return tuple(l)    
+    
 class BPETokenizer:
-    def __init__(self, vocab: dict[int, bytes], merges: list[tuple[bytes, bytes]], special_tokens: list[str]):
+    def __init__(
+        self,
+        vocab: dict[int, bytes],
+        merges: list[tuple[bytes, bytes]],
+        special_tokens: list[str] | None = None,
+    ):
         self.vocab = vocab
+        self.byte_to_token_id = {v: k for k, v in vocab.items()}
         self.merges = merges
-        if special_tokens is None:
-            special_tokens = []
-        self.special_tokens = special_tokens 
+
+        self.bpe_ranks = dict(zip(merges, range(len(merges)))) # 关键!!!!
+            
+        # Handle special tokens
+        self.special_tokens = special_tokens or []
+        self.special_token_bytes = [token.encode("utf-8") for token in self.special_tokens]
         
-        self.byte_to_id = {v: k for k, v in vocab.items()}
-        self.special_tokens_map = {st: self.byte_to_id.get(st.encode('utf-8')) for st in self.special_tokens}
-        
-        
-    @classmethod
-    def from_files(cls, vocab_filepath: str, merges_filepath: str, special_tokens: list[str] | None = None):
-        """Class method that constructs and return a Tokenizer from a serialized vocabulary and list of merges"""
-        # 加载 vocab.pkl
-        with open(vocab_filepath, 'rb') as vf:
-            raw_vocab = pickle.load(vf)
-        # 转换为 {int: bytes}
-        vocab = {int(k): (v.encode("utf-8") if isinstance(v, str) else v)
-                for k, v in raw_vocab.items()}
-        # 加载 merges.pkl
-        with open(merges_filepath, 'rb') as mf:
-            raw_merges = pickle.load(mf)
-        # 转换为 List[Tuple[bytes, bytes]]
-        merges = []
-        for a, b in raw_merges:
-            merges.append((
-                a.encode("utf-8") if isinstance(a, str) else a,
-                b.encode("utf-8") if isinstance(b, str) else b
-            ))
-        return cls(vocab, merges, special_tokens)
+        # Ensure special tokens are in the vocabulary
+        for token_bytes in self.special_token_bytes:
+            if token_bytes not in self.byte_to_token_id:
+                # Add to vocab if not already present
+                new_id = len(self.vocab)
+                self.vocab[new_id] = token_bytes
+                self.byte_to_token_id[token_bytes] = new_id
 
     def encode(self, text: str) -> list[int]:
-        """将输入文本编码为词元ID序列"""
+        tokens = []
 
-        # 1. 预分词，返回每个词块的字节ID元组列表
-        pre_tokenized_chunks = pre_tokenize(text, self.vocab, self.special_tokens, self.special_tokens_map)
-        pretokens = [list(chunk) for chunk in pre_tokenized_chunks]
+        sorted_special_tokens = sorted(self.special_tokens, key=len, reverse=True)
+        pattern = "|".join(map(re.escape, sorted_special_tokens))
+        if pattern:
+            parts = re.split(f"({pattern})", text)
+        else:
+            parts = [text]
 
-        # 2. 对每个词块分别处理
-        for i, pretoken in enumerate(pretokens):
-            for merge in self.merges:
-                new_pretoken = []
-                new_index = self.byte_to_id[merge[0] + merge[1]]
-                j = 0
-                while j < len(pretoken):
-                    if (j < len(pretoken)-1) and ((self.vocab[pretoken[j]], self.vocab[pretoken[j+1]]) == merge):
-                        new_pretoken.append(new_index)
-                        j += 2
-                    else:
-                        new_pretoken.append(pretoken[j])
-                        j += 1
-
-                pretoken = new_pretoken
-
-            pretokens[i] = pretoken
-
-        tokens = [token for pretoken in pretokens for token in pretoken] 
-        return tokens
-    
-    def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
-        """Given an iterable of strings (e.g., a Python file handle), 
-        return a generator that lazily yields token IDs. 
-        This is required for memory-eﬀicient tokenization of large files 
-        that we cannot directly load into memory.
-        """
-        for line in iterable:
-            for idx in self.encode(line):
-                yield idx
-    
-    def decode(self, ids: list[int]) -> str:
-        """Decode a sequence of token IDs into text."""
-        tokens = bytes()
-        vocab_size = len(self.vocab)
-        replacement_char = "\uFFFD"
-
-        for token_id in ids:
-            if token_id < vocab_size:
-                token = self.vocab[token_id]    # bytes
+        for part in parts:
+            if part in self.special_tokens:
+                tokens.append(self.byte_to_token_id[part.encode("utf-8")])
             else:
-                token = bytes(replacement_char, encoding='utf-8')   # Replace tokens with Unicode replacement characters if index out of bounds
+                tokens.extend(self._tokenize_normal(part))
 
-            tokens += token
-        decoded = tokens.decode(encoding='utf-8', errors='replace')
+        return tokens
 
-        return decoded 
-    
+    def encode_iterable(self, iterable: Iterable[str]) -> iter:
+        for chunk in iterable:
+            yield from self.encode(chunk)
+
+
+    def decode(self, ids: list[int]) -> str:
+        full_bytes = b"".join(self.vocab[token_id] for token_id in ids)
+        
+        # Decode bytes to string, replacing invalid sequences
+        return full_bytes.decode("utf-8", errors="replace")
+
+    def _tokenize_normal(self, text: str) -> list[int]:
+        """
+        Tokenize a normal piece of text (not a special token) into token IDs.
+        
+        Args:
+            text: A string to tokenize.
+            
+        Returns:
+            A list of token IDs representing the tokenized text.
+        """
+        # Pre-tokenization
+        pre_tokens = []
+        for m in re.finditer(PAT, text):
+            word = m.group(0)
+            pre_tokens.append(word)
+
+        token_ids = []
+        for token in pre_tokens:
+            # Convert token to bytes tuple
+            byte_tuple = to_bytes_tuple(token)
+            
+            # Apply BPE merges
+            merged = self._apply_merges(byte_tuple)
+            
+            # Get token IDs
+            token_ids.extend(self.byte_to_token_id[b] for b in merged)
+        
+        return token_ids
+
+    def _apply_merges(self, byte_tuple: tuple[bytes, ...]) -> list[bytes]:
+        """
+        Apply BPE merges to a sequence of bytes.
+        
+        Args:
+            byte_tuple: A tuple of single-byte tokens.
+            
+        Returns:
+            A list of merged byte tokens after applying all applicable merges.
+        """
+        word: list[bytes] = list(byte_tuple)
+
+        def get_pairs(word: list[bytes]):
+            pairs = set()
+            prev_char = word[0]
+            for char in word[1:]:
+                pairs.add((prev_char, char))
+                prev_char = char
+            return pairs
+        
+        pairs = get_pairs(word)
+
+        if not pairs:
+            return word
+
+        while True:
+            bigram = min(pairs, key=lambda pair: self.bpe_ranks.get(pair, float('inf')))
+            if bigram not in self.bpe_ranks:
+                break
+            
+            first, second = bigram
+            new_word = []
+            i = 0
+            while i < len(word):
+                try:
+                    j = word.index(first, i)
+                except ValueError:
+                    new_word.extend(word[i:])
+                    break
+                else:
+                    new_word.extend(word[i:j])
+                    i = j
+
+                if word[i] == first and i < len(word) - 1 and word[i + 1] == second:
+                    new_word.append(first + second)
+                    i += 2
+                else:
+                    new_word.append(word[i])
+                    i += 1
+            new_word = tuple(new_word)
+            word = new_word
+            if len(word) == 1:
+                break
+            else:
+                pairs = get_pairs(word)
+
+        return word    

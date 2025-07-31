@@ -101,7 +101,7 @@ def main():
     val_data = get_memmap_dataset(str(val_data_path))
     
     # 构建优化器
-    optimizer = AdamW()(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     # 恢复断点
     start_iter = 0
